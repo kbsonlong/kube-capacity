@@ -15,7 +15,7 @@
 package main
 
 import (
-	"github.com/robscott/kube-capacity/pkg/cmd"
+	"github.com/kbsonlong/kube-capacity/pkg/cmd"
 )
 
 func main() {
