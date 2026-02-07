@@ -54,19 +54,21 @@ type resourceMetric struct {
 }
 
 type clusterMetric struct {
-	cpu         *resourceMetric
-	memory      *resourceMetric
-	nodeMetrics map[string]*nodeMetric
-	podCount    *podCount
+	cpu            *resourceMetric
+	memory         *resourceMetric
+	extraResources map[string]*resourceMetric
+	nodeMetrics    map[string]*nodeMetric
+	podCount       *podCount
 }
 
 type nodeMetric struct {
-	name       string
-	labels     map[string]string
-	cpu        *resourceMetric
-	memory     *resourceMetric
-	podMetrics map[string]*podMetric
-	podCount   *podCount
+	name           string
+	labels         map[string]string
+	cpu            *resourceMetric
+	memory         *resourceMetric
+	extraResources map[string]*resourceMetric
+	podMetrics     map[string]*podMetric
+	podCount       *podCount
 }
 
 type podMetric struct {
@@ -74,13 +76,15 @@ type podMetric struct {
 	namespace        string
 	cpu              *resourceMetric
 	memory           *resourceMetric
+	extraResources   map[string]*resourceMetric
 	containerMetrics map[string]*containerMetric
 }
 
 type containerMetric struct {
-	name   string
-	cpu    *resourceMetric
-	memory *resourceMetric
+	name           string
+	cpu            *resourceMetric
+	memory         *resourceMetric
+	extraResources map[string]*resourceMetric
 }
 
 type podCount struct {
@@ -89,12 +93,17 @@ type podCount struct {
 }
 
 func buildClusterMetric(podList *corev1.PodList, pmList *v1beta1.PodMetricsList,
-	nodeList *corev1.NodeList, nmList *v1beta1.NodeMetricsList) clusterMetric {
+	nodeList *corev1.NodeList, nmList *v1beta1.NodeMetricsList, extraResourceNames []string) clusterMetric {
 	cm := clusterMetric{
-		cpu:         &resourceMetric{resourceType: "cpu"},
-		memory:      &resourceMetric{resourceType: "memory"},
-		nodeMetrics: map[string]*nodeMetric{},
-		podCount:    &podCount{},
+		cpu:            &resourceMetric{resourceType: "cpu"},
+		memory:         &resourceMetric{resourceType: "memory"},
+		extraResources: make(map[string]*resourceMetric),
+		nodeMetrics:    map[string]*nodeMetric{},
+		podCount:       &podCount{},
+	}
+
+	for _, name := range extraResourceNames {
+		cm.extraResources[name] = &resourceMetric{resourceType: name}
 	}
 
 	var totalPodAllocatable int64
@@ -108,7 +117,8 @@ func buildClusterMetric(podList *corev1.PodList, pmList *v1beta1.PodMetricsList,
 		}
 		totalPodCurrent += tmpPodCount
 		totalPodAllocatable += node.Status.Allocatable.Pods().Value()
-		cm.nodeMetrics[node.Name] = &nodeMetric{
+
+		nm := &nodeMetric{
 			name:   node.Name,
 			labels: map[string]string{},
 			cpu: &resourceMetric{
@@ -119,12 +129,22 @@ func buildClusterMetric(podList *corev1.PodList, pmList *v1beta1.PodMetricsList,
 				resourceType: "memory",
 				allocatable:  node.Status.Allocatable["memory"],
 			},
-			podMetrics: map[string]*podMetric{},
+			extraResources: make(map[string]*resourceMetric),
+			podMetrics:     map[string]*podMetric{},
 			podCount: &podCount{
 				current:     tmpPodCount,
 				allocatable: node.Status.Allocatable.Pods().Value(),
 			},
 		}
+
+		for _, rName := range extraResourceNames {
+			nm.extraResources[rName] = &resourceMetric{
+				resourceType: rName,
+				allocatable:  node.Status.Allocatable[corev1.ResourceName(rName)],
+			}
+		}
+
+		cm.nodeMetrics[node.Name] = nm
 
 		if node.Labels != nil {
 			cm.nodeMetrics[node.Name].labels = node.Labels
@@ -141,6 +161,12 @@ func buildClusterMetric(podList *corev1.PodList, pmList *v1beta1.PodMetricsList,
 			}
 			cm.nodeMetrics[nm.Name].cpu.utilization = nm.Usage["cpu"]
 			cm.nodeMetrics[nm.Name].memory.utilization = nm.Usage["memory"]
+
+			for _, rName := range extraResourceNames {
+				if val, ok := nm.Usage[corev1.ResourceName(rName)]; ok {
+					cm.nodeMetrics[nm.Name].extraResources[rName].utilization = val
+				}
+			}
 		}
 	}
 
@@ -153,7 +179,7 @@ func buildClusterMetric(podList *corev1.PodList, pmList *v1beta1.PodMetricsList,
 
 	for _, pod := range podList.Items {
 		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
-			cm.addPodMetric(&pod, podMetrics[fmt.Sprintf("%s-%s", pod.GetNamespace(), pod.GetName())])
+			cm.addPodMetric(&pod, podMetrics[fmt.Sprintf("%s-%s", pod.GetNamespace(), pod.GetName())], extraResourceNames)
 		}
 	}
 
@@ -178,7 +204,7 @@ func (rm *resourceMetric) addMetric(m *resourceMetric) {
 	rm.limit.Add(m.limit)
 }
 
-func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMetrics) {
+func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMetrics, extraResourceNames []string) {
 	req, limit := resourcehelper.PodRequestsAndLimits(pod)
 	key := fmt.Sprintf("%s-%s", pod.Namespace, pod.Name)
 	nm := cm.nodeMetrics[pod.Spec.NodeName]
@@ -196,11 +222,20 @@ func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMet
 			request:      req["memory"],
 			limit:        limit["memory"],
 		},
+		extraResources:   make(map[string]*resourceMetric),
 		containerMetrics: map[string]*containerMetric{},
 	}
 
+	for _, rName := range extraResourceNames {
+		pm.extraResources[rName] = &resourceMetric{
+			resourceType: rName,
+			request:      req[corev1.ResourceName(rName)],
+			limit:        limit[corev1.ResourceName(rName)],
+		}
+	}
+
 	for _, container := range pod.Spec.Containers {
-		pm.containerMetrics[container.Name] = &containerMetric{
+		cm := &containerMetric{
 			name: container.Name,
 			cpu: &resourceMetric{
 				resourceType: "cpu",
@@ -214,13 +249,31 @@ func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMet
 				limit:        container.Resources.Limits["memory"],
 				allocatable:  nm.memory.allocatable,
 			},
+			extraResources: make(map[string]*resourceMetric),
 		}
+
+		for _, rName := range extraResourceNames {
+			cm.extraResources[rName] = &resourceMetric{
+				resourceType: rName,
+				request:      container.Resources.Requests[corev1.ResourceName(rName)],
+				limit:        container.Resources.Limits[corev1.ResourceName(rName)],
+				allocatable:  nm.extraResources[rName].allocatable,
+			}
+		}
+
+		pm.containerMetrics[container.Name] = cm
 	}
 
 	if nm != nil {
 		nm.podMetrics[key] = pm
 		nm.podMetrics[key].cpu.allocatable = nm.cpu.allocatable
 		nm.podMetrics[key].memory.allocatable = nm.memory.allocatable
+
+		for _, rName := range extraResourceNames {
+			nm.podMetrics[key].extraResources[rName].allocatable = nm.extraResources[rName].allocatable
+			nm.extraResources[rName].request.Add(req[corev1.ResourceName(rName)])
+			nm.extraResources[rName].limit.Add(limit[corev1.ResourceName(rName)])
+		}
 
 		nm.cpu.request.Add(req["cpu"])
 		nm.cpu.limit.Add(limit["cpu"])
@@ -235,6 +288,13 @@ func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMet
 			pm.cpu.utilization.Add(container.Usage["cpu"])
 			pm.containerMetrics[container.Name].memory.utilization = container.Usage["memory"]
 			pm.memory.utilization.Add(container.Usage["memory"])
+
+			for _, rName := range extraResourceNames {
+				if val, ok := container.Usage[corev1.ResourceName(rName)]; ok {
+					pm.containerMetrics[container.Name].extraResources[rName].utilization = val
+					pm.extraResources[rName].utilization.Add(val)
+				}
+			}
 		}
 	}
 }
@@ -242,6 +302,12 @@ func (cm *clusterMetric) addPodMetric(pod *corev1.Pod, podMetrics v1beta1.PodMet
 func (cm *clusterMetric) addNodeMetric(nm *nodeMetric) {
 	cm.cpu.addMetric(nm.cpu)
 	cm.memory.addMetric(nm.memory)
+
+	for name, rm := range nm.extraResources {
+		if cm.extraResources[name] != nil {
+			cm.extraResources[name].addMetric(rm)
+		}
+	}
 }
 
 func (cm *clusterMetric) getSortedNodeMetrics(sortBy string) []*nodeMetric {
@@ -342,6 +408,12 @@ func (nm *nodeMetric) addPodUtilization() {
 	for _, pm := range nm.podMetrics {
 		nm.cpu.utilization.Add(pm.cpu.utilization)
 		nm.memory.utilization.Add(pm.memory.utilization)
+
+		for name, rm := range pm.extraResources {
+			if nm.extraResources[name] != nil {
+				nm.extraResources[name].utilization.Add(rm.utilization)
+			}
+		}
 	}
 }
 

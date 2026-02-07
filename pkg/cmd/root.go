@@ -87,6 +87,8 @@ func init() {
 		"hide-limits", "", false, "hide limits from output")
 	rootCmd.PersistentFlags().BoolVarP(&opts.ShowLabels,
 		"show-labels", "", false, "includes node labels in output")
+	rootCmd.PersistentFlags().StringSliceVarP(&opts.ExtraResources,
+		"extra-resources", "r", []string{}, "additional resources to monitor (e.g. nvidia.com/gpu)")
 }
 
 // Execute is the primary entrypoint for this CLI

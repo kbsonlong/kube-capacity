@@ -29,7 +29,7 @@ type tablePrinter struct {
 
 func (tp *tablePrinter) hasVisibleColumns() bool {
 	// Check if any data columns will be shown
-	return !tp.opts.HideRequests || !tp.opts.HideLimits || tp.opts.ShowUtil || tp.opts.ShowPodCount || tp.opts.ShowLabels
+	return !tp.opts.HideRequests || !tp.opts.HideLimits || tp.opts.ShowUtil || tp.opts.ShowPodCount || tp.opts.ShowLabels || len(tp.opts.ExtraResources) > 0
 }
 
 type tableLine struct {
@@ -45,6 +45,7 @@ type tableLine struct {
 	memoryUtil     string
 	podCount       string
 	labels         string
+	extraResources []string
 }
 
 var headerStrings = tableLine{
@@ -66,7 +67,19 @@ func (tp *tablePrinter) Print() {
 	tp.w.Init(os.Stdout, 0, 8, 2, ' ', 0)
 	sortedNodeMetrics := tp.cm.getSortedNodeMetrics(tp.opts.SortBy)
 
-	tp.printLine(&headerStrings)
+	headers := headerStrings
+	for _, name := range tp.opts.ExtraResources {
+		if !tp.opts.HideRequests {
+			headers.extraResources = append(headers.extraResources, strings.ToUpper(name)+" REQUESTS")
+		}
+		if !tp.opts.HideLimits {
+			headers.extraResources = append(headers.extraResources, strings.ToUpper(name)+" LIMITS")
+		}
+		if tp.opts.ShowUtil {
+			headers.extraResources = append(headers.extraResources, strings.ToUpper(name)+" UTIL")
+		}
+	}
+	tp.printLine(&headers)
 
 	if len(sortedNodeMetrics) > 1 {
 		tp.printClusterLine()
@@ -148,11 +161,15 @@ func (tp *tablePrinter) getLineItems(tl *tableLine) []string {
 		lineItems = append(lineItems, tl.labels)
 	}
 
+	if len(tl.extraResources) > 0 {
+		lineItems = append(lineItems, tl.extraResources...)
+	}
+
 	return lineItems
 }
 
 func (tp *tablePrinter) printClusterLine() {
-	tp.printLine(&tableLine{
+	tl := &tableLine{
 		node:           VoidValue,
 		namespace:      VoidValue,
 		pod:            VoidValue,
@@ -165,11 +182,29 @@ func (tp *tablePrinter) printClusterLine() {
 		memoryUtil:     tp.cm.memory.utilString(tp.opts.AvailableFormat),
 		podCount:       tp.cm.podCount.podCountString(),
 		labels:         VoidValue,
-	})
+	}
+
+	for _, name := range tp.opts.ExtraResources {
+		rm := tp.cm.extraResources[name]
+		if rm == nil {
+			rm = &resourceMetric{resourceType: name}
+		}
+		if !tp.opts.HideRequests {
+			tl.extraResources = append(tl.extraResources, rm.requestString(tp.opts.AvailableFormat))
+		}
+		if !tp.opts.HideLimits {
+			tl.extraResources = append(tl.extraResources, rm.limitString(tp.opts.AvailableFormat))
+		}
+		if tp.opts.ShowUtil {
+			tl.extraResources = append(tl.extraResources, rm.utilString(tp.opts.AvailableFormat))
+		}
+	}
+
+	tp.printLine(tl)
 }
 
 func (tp *tablePrinter) printNodeLine(nodeName string, nm *nodeMetric) {
-	tp.printLine(&tableLine{
+	tl := &tableLine{
 		node:           nodeName,
 		namespace:      VoidValue,
 		pod:            VoidValue,
@@ -182,11 +217,29 @@ func (tp *tablePrinter) printNodeLine(nodeName string, nm *nodeMetric) {
 		memoryUtil:     nm.memory.utilString(tp.opts.AvailableFormat),
 		podCount:       nm.podCount.podCountString(),
 		labels:         nodeLabelsString(nm.labels),
-	})
+	}
+
+	for _, name := range tp.opts.ExtraResources {
+		rm := nm.extraResources[name]
+		if rm == nil {
+			rm = &resourceMetric{resourceType: name}
+		}
+		if !tp.opts.HideRequests {
+			tl.extraResources = append(tl.extraResources, rm.requestString(tp.opts.AvailableFormat))
+		}
+		if !tp.opts.HideLimits {
+			tl.extraResources = append(tl.extraResources, rm.limitString(tp.opts.AvailableFormat))
+		}
+		if tp.opts.ShowUtil {
+			tl.extraResources = append(tl.extraResources, rm.utilString(tp.opts.AvailableFormat))
+		}
+	}
+
+	tp.printLine(tl)
 }
 
 func (tp *tablePrinter) printPodLine(nodeName string, pm *podMetric) {
-	tp.printLine(&tableLine{
+	tl := &tableLine{
 		node:           nodeName,
 		namespace:      pm.namespace,
 		pod:            pm.name,
@@ -197,11 +250,29 @@ func (tp *tablePrinter) printPodLine(nodeName string, pm *podMetric) {
 		memoryRequests: pm.memory.requestString(tp.opts.AvailableFormat),
 		memoryLimits:   pm.memory.limitString(tp.opts.AvailableFormat),
 		memoryUtil:     pm.memory.utilString(tp.opts.AvailableFormat),
-	})
+	}
+
+	for _, name := range tp.opts.ExtraResources {
+		rm := pm.extraResources[name]
+		if rm == nil {
+			rm = &resourceMetric{resourceType: name}
+		}
+		if !tp.opts.HideRequests {
+			tl.extraResources = append(tl.extraResources, rm.requestString(tp.opts.AvailableFormat))
+		}
+		if !tp.opts.HideLimits {
+			tl.extraResources = append(tl.extraResources, rm.limitString(tp.opts.AvailableFormat))
+		}
+		if tp.opts.ShowUtil {
+			tl.extraResources = append(tl.extraResources, rm.utilString(tp.opts.AvailableFormat))
+		}
+	}
+
+	tp.printLine(tl)
 }
 
 func (tp *tablePrinter) printContainerLine(nodeName string, pm *podMetric, cm *containerMetric) {
-	tp.printLine(&tableLine{
+	tl := &tableLine{
 		node:           nodeName,
 		namespace:      pm.namespace,
 		pod:            pm.name,
@@ -212,5 +283,23 @@ func (tp *tablePrinter) printContainerLine(nodeName string, pm *podMetric, cm *c
 		memoryRequests: cm.memory.requestString(tp.opts.AvailableFormat),
 		memoryLimits:   cm.memory.limitString(tp.opts.AvailableFormat),
 		memoryUtil:     cm.memory.utilString(tp.opts.AvailableFormat),
-	})
+	}
+
+	for _, name := range tp.opts.ExtraResources {
+		rm := cm.extraResources[name]
+		if rm == nil {
+			rm = &resourceMetric{resourceType: name}
+		}
+		if !tp.opts.HideRequests {
+			tl.extraResources = append(tl.extraResources, rm.requestString(tp.opts.AvailableFormat))
+		}
+		if !tp.opts.HideLimits {
+			tl.extraResources = append(tl.extraResources, rm.limitString(tp.opts.AvailableFormat))
+		}
+		if tp.opts.ShowUtil {
+			tl.extraResources = append(tl.extraResources, rm.utilString(tp.opts.AvailableFormat))
+		}
+	}
+
+	tp.printLine(tl)
 }
