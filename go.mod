@@ -1,4 +1,4 @@
-module github.com/robscott/kube-capacity
+module github.com/kbsonlong/kube-capacity
 
 go 1.23.0 // keep in sync with .github/workflows/test.yaml and .github/workflows/golangci-lint.yaml
 
